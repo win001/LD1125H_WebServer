@@ -17,6 +17,11 @@ WebServer server(80);
 #define RADAR_TX 17
 HardwareSerial radarSerial(2); // Use UART2
 
+// Output pin for load control (relay, LED, etc.)
+// HIGH = Occupied (presence detected)
+// LOW = No presence
+#define OCCUPANCY_OUTPUT_PIN 2  // GPIO2 (D2)
+
 // Sensor Data
 struct {
   String state = "none";
@@ -29,12 +34,15 @@ struct {
 
 // Configuration
 struct {
-  float rmax = 8.0;
-  int mth1 = 60;
-  int mth2 = 30;
-  int mth3 = 20;
-  int timeout = 30;
-  bool testMode = false;
+  float rmax = 8.0;        // Max detection distance (meters)
+  int mth1_mov = 60;       // Zone 1 (0-2.8m) movement sensitivity
+  int mth2_mov = 30;       // Zone 2 (2.8-8m) movement sensitivity
+  int mth3_mov = 20;       // Zone 3 (>8m) movement sensitivity
+  int mth1_occ = 60;       // Zone 1 (0-2.8m) occupancy sensitivity
+  int mth2_occ = 30;       // Zone 2 (2.8-8m) occupancy sensitivity
+  int mth3_occ = 20;       // Zone 3 (>8m) occupancy sensitivity
+  int timeout = 30;        // No presence timeout (seconds)
+  bool testMode = false;   // Test mode flag
 } config;
 
 // Statistics
@@ -60,6 +68,17 @@ void reportStateChange(String newState, String oldState, float distance) {
   Serial.println("m");
   Serial.print("  Timestamp: ");
   Serial.println(millis());
+
+  // Control output pin based on occupancy state
+  if (newState == "none") {
+    digitalWrite(OCCUPANCY_OUTPUT_PIN, LOW);
+    Serial.println("[OUTPUT] GPIO2 -> LOW (No Presence - Load OFF)");
+  } else {
+    // newState is "moving" or "stationary" - both mean occupied
+    digitalWrite(OCCUPANCY_OUTPUT_PIN, HIGH);
+    Serial.println("[OUTPUT] GPIO2 -> HIGH (Occupied - Load ON)");
+  }
+
   Serial.println("========================================");
 
   // TODO: Add your server reporting code here
@@ -86,6 +105,13 @@ void setup() {
   Serial.print(", TX=GPIO");
   Serial.print(RADAR_TX);
   Serial.println(")");
+
+  // Initialize occupancy output pin
+  Serial.print("[INIT] Setting up occupancy output on GPIO");
+  Serial.println(OCCUPANCY_OUTPUT_PIN);
+  pinMode(OCCUPANCY_OUTPUT_PIN, OUTPUT);
+  digitalWrite(OCCUPANCY_OUTPUT_PIN, LOW);  // Start with LOW (no presence)
+  Serial.println("[INIT] Occupancy output initialized (LOW = No Presence)");
 
   Serial.println("[INIT] Initializing EEPROM...");
   EEPROM.begin(512);
@@ -193,27 +219,44 @@ void handleRoot() {
   html += "<input type='range' id='rmax' min='0.4' max='12' step='0.1' value='8'>";
   html += "</div>";
   
-  // Zone 1
+  // Movement Sensitivity Section
+  html += "<h3>Movement Sensitivity (mov)</h3>";
+
   html += "<div class='zone'>";
-  html += "<label>Zone 1 (0-2.8m) Sensitivity: <span id='mth1_val'>60</span></label>";
-  html += "<input type='range' id='mth1' min='10' max='600' step='10' value='60'>";
+  html += "<label>Zone 1 (0-2.8m): <span id='mth1_mov_val'>60</span></label>";
+  html += "<input type='range' id='mth1_mov' min='10' max='600' step='10' value='60'>";
+  html += "</div>";
+
+  html += "<div class='zone'>";
+  html += "<label>Zone 2 (2.8-8m): <span id='mth2_mov_val'>30</span></label>";
+  html += "<input type='range' id='mth2_mov' min='5' max='300' step='5' value='30'>";
+  html += "</div>";
+
+  html += "<div class='zone'>";
+  html += "<label>Zone 3 (>8m): <span id='mth3_mov_val'>20</span></label>";
+  html += "<input type='range' id='mth3_mov' min='5' max='200' step='5' value='20'>";
+  html += "</div>";
+
+  // Occupancy Sensitivity Section
+  html += "<h3>Occupancy Sensitivity (occ)</h3>";
+  html += "<small>Lower = More Sensitive</small>";
+
+  html += "<div class='zone'>";
+  html += "<label>Zone 1 (0-2.8m): <span id='mth1_occ_val'>60</span></label>";
+  html += "<input type='range' id='mth1_occ' min='10' max='600' step='10' value='60'>";
+  html += "</div>";
+
+  html += "<div class='zone'>";
+  html += "<label>Zone 2 (2.8-8m): <span id='mth2_occ_val'>30</span></label>";
+  html += "<input type='range' id='mth2_occ' min='5' max='300' step='5' value='30'>";
   html += "<small>Lower = More Sensitive</small>";
   html += "</div>";
-  
-  // Zone 2
+
   html += "<div class='zone'>";
-  html += "<label>Zone 2 (2.8-8m) Sensitivity: <span id='mth2_val'>30</span></label>";
-  html += "<input type='range' id='mth2' min='5' max='300' step='5' value='30'>";
-  html += "<small>Lower = More Sensitive</small>";
+  html += "<label>Zone 3 (>8m): <span id='mth3_occ_val'>20</span></label>";
+  html += "<input type='range' id='mth3_occ' min='5' max='200' step='5' value='20'>";
   html += "</div>";
-  
-  // Zone 3
-  html += "<div class='zone'>";
-  html += "<label>Zone 3 (>8m) Sensitivity: <span id='mth3_val'>20</span></label>";
-  html += "<input type='range' id='mth3' min='5' max='200' step='5' value='20'>";
-  html += "<small>Lower = More Sensitive</small>";
-  html += "</div>";
-  
+
   // Timeout
   html += "<div class='form-group'>";
   html += "<label>No Presence Timeout (seconds)</label>";
@@ -262,12 +305,18 @@ void handleRoot() {
   html += "  fetch('/config').then(r=>r.json()).then(d=>{";
   html += "    document.getElementById('rmax').value=d.rmax;";
   html += "    document.getElementById('rmax_val').innerText=d.rmax;";
-  html += "    document.getElementById('mth1').value=d.mth1;";
-  html += "    document.getElementById('mth1_val').innerText=d.mth1;";
-  html += "    document.getElementById('mth2').value=d.mth2;";
-  html += "    document.getElementById('mth2_val').innerText=d.mth2;";
-  html += "    document.getElementById('mth3').value=d.mth3;";
-  html += "    document.getElementById('mth3_val').innerText=d.mth3;";
+  html += "    document.getElementById('mth1_mov').value=d.mth1_mov;";
+  html += "    document.getElementById('mth1_mov_val').innerText=d.mth1_mov;";
+  html += "    document.getElementById('mth2_mov').value=d.mth2_mov;";
+  html += "    document.getElementById('mth2_mov_val').innerText=d.mth2_mov;";
+  html += "    document.getElementById('mth3_mov').value=d.mth3_mov;";
+  html += "    document.getElementById('mth3_mov_val').innerText=d.mth3_mov;";
+  html += "    document.getElementById('mth1_occ').value=d.mth1_occ;";
+  html += "    document.getElementById('mth1_occ_val').innerText=d.mth1_occ;";
+  html += "    document.getElementById('mth2_occ').value=d.mth2_occ;";
+  html += "    document.getElementById('mth2_occ_val').innerText=d.mth2_occ;";
+  html += "    document.getElementById('mth3_occ').value=d.mth3_occ;";
+  html += "    document.getElementById('mth3_occ_val').innerText=d.mth3_occ;";
   html += "    document.getElementById('timeout').value=d.timeout;";
   html += "  });";
   html += "}";
@@ -275,9 +324,12 @@ void handleRoot() {
   html += "function saveConfig(){";
   html += "  var data={";
   html += "    rmax:parseFloat(document.getElementById('rmax').value),";
-  html += "    mth1:parseInt(document.getElementById('mth1').value),";
-  html += "    mth2:parseInt(document.getElementById('mth2').value),";
-  html += "    mth3:parseInt(document.getElementById('mth3').value),";
+  html += "    mth1_mov:parseInt(document.getElementById('mth1_mov').value),";
+  html += "    mth2_mov:parseInt(document.getElementById('mth2_mov').value),";
+  html += "    mth3_mov:parseInt(document.getElementById('mth3_mov').value),";
+  html += "    mth1_occ:parseInt(document.getElementById('mth1_occ').value),";
+  html += "    mth2_occ:parseInt(document.getElementById('mth2_occ').value),";
+  html += "    mth3_occ:parseInt(document.getElementById('mth3_occ').value),";
   html += "    timeout:parseInt(document.getElementById('timeout').value)";
   html += "  };";
   html += "  fetch('/config',{method:'POST',body:JSON.stringify(data)}).then(()=>{";
@@ -305,14 +357,23 @@ void handleRoot() {
   html += "document.getElementById('rmax').oninput=function(){";
   html += "  document.getElementById('rmax_val').innerText=this.value;";
   html += "};";
-  html += "document.getElementById('mth1').oninput=function(){";
-  html += "  document.getElementById('mth1_val').innerText=this.value;";
+  html += "document.getElementById('mth1_mov').oninput=function(){";
+  html += "  document.getElementById('mth1_mov_val').innerText=this.value;";
   html += "};";
-  html += "document.getElementById('mth2').oninput=function(){";
-  html += "  document.getElementById('mth2_val').innerText=this.value;";
+  html += "document.getElementById('mth2_mov').oninput=function(){";
+  html += "  document.getElementById('mth2_mov_val').innerText=this.value;";
   html += "};";
-  html += "document.getElementById('mth3').oninput=function(){";
-  html += "  document.getElementById('mth3_val').innerText=this.value;";
+  html += "document.getElementById('mth3_mov').oninput=function(){";
+  html += "  document.getElementById('mth3_mov_val').innerText=this.value;";
+  html += "};";
+  html += "document.getElementById('mth1_occ').oninput=function(){";
+  html += "  document.getElementById('mth1_occ_val').innerText=this.value;";
+  html += "};";
+  html += "document.getElementById('mth2_occ').oninput=function(){";
+  html += "  document.getElementById('mth2_occ_val').innerText=this.value;";
+  html += "};";
+  html += "document.getElementById('mth3_occ').oninput=function(){";
+  html += "  document.getElementById('mth3_occ_val').innerText=this.value;";
   html += "};";
   
   // Auto refresh - Update every 3 seconds
@@ -349,20 +410,29 @@ void handleGetConfig() {
   Serial.println("[WEB] GET /config - Sending current configuration");
   String json = "{";
   json += "\"rmax\":" + String(config.rmax) + ",";
-  json += "\"mth1\":" + String(config.mth1) + ",";
-  json += "\"mth2\":" + String(config.mth2) + ",";
-  json += "\"mth3\":" + String(config.mth3) + ",";
+  json += "\"mth1_mov\":" + String(config.mth1_mov) + ",";
+  json += "\"mth2_mov\":" + String(config.mth2_mov) + ",";
+  json += "\"mth3_mov\":" + String(config.mth3_mov) + ",";
+  json += "\"mth1_occ\":" + String(config.mth1_occ) + ",";
+  json += "\"mth2_occ\":" + String(config.mth2_occ) + ",";
+  json += "\"mth3_occ\":" + String(config.mth3_occ) + ",";
   json += "\"timeout\":" + String(config.timeout) + ",";
   json += "\"testMode\":" + String(config.testMode ? "true" : "false");
   json += "}";
   Serial.print("[CONFIG] rmax=");
   Serial.print(config.rmax);
-  Serial.print(", mth1=");
-  Serial.print(config.mth1);
-  Serial.print(", mth2=");
-  Serial.print(config.mth2);
-  Serial.print(", mth3=");
-  Serial.print(config.mth3);
+  Serial.print("m, mth_mov=");
+  Serial.print(config.mth1_mov);
+  Serial.print("/");
+  Serial.print(config.mth2_mov);
+  Serial.print("/");
+  Serial.print(config.mth3_mov);
+  Serial.print(", mth_occ=");
+  Serial.print(config.mth1_occ);
+  Serial.print("/");
+  Serial.print(config.mth2_occ);
+  Serial.print("/");
+  Serial.print(config.mth3_occ);
   Serial.print(", timeout=");
   Serial.print(config.timeout);
   Serial.print("s, testMode=");
@@ -376,24 +446,33 @@ void handleSetConfig() {
     Serial.print("[CONFIG] Received JSON: ");
     Serial.println(server.arg("plain"));
 
-    DynamicJsonDocument doc(256);
+    DynamicJsonDocument doc(512);
     deserializeJson(doc, server.arg("plain"));
 
     config.rmax = doc["rmax"] | config.rmax;
-    config.mth1 = doc["mth1"] | config.mth1;
-    config.mth2 = doc["mth2"] | config.mth2;
-    config.mth3 = doc["mth3"] | config.mth3;
+    config.mth1_mov = doc["mth1_mov"] | config.mth1_mov;
+    config.mth2_mov = doc["mth2_mov"] | config.mth2_mov;
+    config.mth3_mov = doc["mth3_mov"] | config.mth3_mov;
+    config.mth1_occ = doc["mth1_occ"] | config.mth1_occ;
+    config.mth2_occ = doc["mth2_occ"] | config.mth2_occ;
+    config.mth3_occ = doc["mth3_occ"] | config.mth3_occ;
     config.timeout = doc["timeout"] | config.timeout;
 
     Serial.println("[CONFIG] New configuration:");
     Serial.print("  rmax=");
     Serial.print(config.rmax);
-    Serial.print("m, mth1=");
-    Serial.print(config.mth1);
-    Serial.print(", mth2=");
-    Serial.print(config.mth2);
-    Serial.print(", mth3=");
-    Serial.print(config.mth3);
+    Serial.print("m, mth_mov=");
+    Serial.print(config.mth1_mov);
+    Serial.print("/");
+    Serial.print(config.mth2_mov);
+    Serial.print("/");
+    Serial.print(config.mth3_mov);
+    Serial.print(", mth_occ=");
+    Serial.print(config.mth1_occ);
+    Serial.print("/");
+    Serial.print(config.mth2_occ);
+    Serial.print("/");
+    Serial.print(config.mth3_occ);
     Serial.print(", timeout=");
     Serial.print(config.timeout);
     Serial.println("s");
@@ -444,12 +523,15 @@ void handleTestMode() {
 void handleReset() {
   Serial.println("[WEB] POST /reset - Resetting to default configuration");
   config.rmax = 8.0;
-  config.mth1 = 60;
-  config.mth2 = 30;
-  config.mth3 = 20;
+  config.mth1_mov = 60;
+  config.mth2_mov = 30;
+  config.mth3_mov = 20;
+  config.mth1_occ = 60;
+  config.mth2_occ = 30;
+  config.mth3_occ = 20;
   config.timeout = 30;
   config.testMode = false;
-  Serial.println("[CONFIG] Defaults: rmax=8.0m, mth1=60, mth2=30, mth3=20, timeout=30s");
+  Serial.println("[CONFIG] Defaults: rmax=8.0m, mth_mov=60/30/20, mth_occ=60/30/20, timeout=30s");
   saveConfig();
   configureRadar();
   server.send(200, "text/plain", "OK");
@@ -560,30 +642,52 @@ void checkTimeout() {
 void configureRadar() {
   Serial.println("[RADAR] Configuring radar sensor...");
 
-  String cmd1 = "rmax=" + String(config.rmax, 1) + "\r\n";
+  // Max detection distance
+  String cmd = "rmax=" + String(config.rmax, 1) + "\r\n";
   Serial.print("[RADAR] Sending: ");
-  Serial.print(cmd1);
-  radarSerial.print(cmd1);
+  Serial.print(cmd);
+  radarSerial.print(cmd);
   delay(100);
 
-  String cmd2 = "mth1=" + String(config.mth1) + "\r\n";
+  // Movement sensitivity thresholds
+  cmd = "mth1_mov=" + String(config.mth1_mov) + "\r\n";
   Serial.print("[RADAR] Sending: ");
-  Serial.print(cmd2);
-  radarSerial.print(cmd2);
+  Serial.print(cmd);
+  radarSerial.print(cmd);
   delay(100);
 
-  String cmd3 = "mth2=" + String(config.mth2) + "\r\n";
+  cmd = "mth2_mov=" + String(config.mth2_mov) + "\r\n";
   Serial.print("[RADAR] Sending: ");
-  Serial.print(cmd3);
-  radarSerial.print(cmd3);
+  Serial.print(cmd);
+  radarSerial.print(cmd);
   delay(100);
 
-  String cmd4 = "mth3=" + String(config.mth3) + "\r\n";
+  cmd = "mth3_mov=" + String(config.mth3_mov) + "\r\n";
   Serial.print("[RADAR] Sending: ");
-  Serial.print(cmd4);
-  radarSerial.print(cmd4);
+  Serial.print(cmd);
+  radarSerial.print(cmd);
   delay(100);
 
+  // Occupancy sensitivity thresholds
+  cmd = "mth1_occ=" + String(config.mth1_occ) + "\r\n";
+  Serial.print("[RADAR] Sending: ");
+  Serial.print(cmd);
+  radarSerial.print(cmd);
+  delay(100);
+
+  cmd = "mth2_occ=" + String(config.mth2_occ) + "\r\n";
+  Serial.print("[RADAR] Sending: ");
+  Serial.print(cmd);
+  radarSerial.print(cmd);
+  delay(100);
+
+  cmd = "mth3_occ=" + String(config.mth3_occ) + "\r\n";
+  Serial.print("[RADAR] Sending: ");
+  Serial.print(cmd);
+  radarSerial.print(cmd);
+  delay(100);
+
+  // Save configuration to radar
   Serial.println("[RADAR] Sending: save");
   radarSerial.print("save\r\n");
   delay(100);
@@ -603,9 +707,12 @@ void loadConfig() {
   if (config.rmax < 0.4 || config.rmax > 12) {
     Serial.println("[EEPROM] Invalid configuration detected, loading defaults");
     config.rmax = 8.0;
-    config.mth1 = 60;
-    config.mth2 = 30;
-    config.mth3 = 20;
+    config.mth1_mov = 60;
+    config.mth2_mov = 30;
+    config.mth3_mov = 20;
+    config.mth1_occ = 60;
+    config.mth2_occ = 30;
+    config.mth3_occ = 20;
     config.timeout = 30;
     config.testMode = false;
     saveConfig();
@@ -613,12 +720,18 @@ void loadConfig() {
     Serial.println("[EEPROM] Valid configuration loaded:");
     Serial.print("  rmax=");
     Serial.print(config.rmax);
-    Serial.print("m, mth1=");
-    Serial.print(config.mth1);
-    Serial.print(", mth2=");
-    Serial.print(config.mth2);
-    Serial.print(", mth3=");
-    Serial.print(config.mth3);
+    Serial.print("m, mth_mov=");
+    Serial.print(config.mth1_mov);
+    Serial.print("/");
+    Serial.print(config.mth2_mov);
+    Serial.print("/");
+    Serial.print(config.mth3_mov);
+    Serial.print(", mth_occ=");
+    Serial.print(config.mth1_occ);
+    Serial.print("/");
+    Serial.print(config.mth2_occ);
+    Serial.print("/");
+    Serial.print(config.mth3_occ);
     Serial.print(", timeout=");
     Serial.print(config.timeout);
     Serial.print("s, testMode=");
