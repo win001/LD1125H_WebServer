@@ -1,7 +1,7 @@
 # LD1125H Occupancy Sensor Web Server
 
 ## Project Overview
-ESP8266-based web server for monitoring and configuring an HLK-LD1125H-24G millimeter wave radar sensor for human presence detection.
+ESP32-based web server for monitoring and configuring an HLK-LD1125H-24G millimeter wave radar sensor for human presence detection.
 
 ## Hardware Components
 
@@ -14,13 +14,19 @@ ESP8266-based web server for monitoring and configuring an HLK-LD1125H-24G milli
 - **Power**: 5V, 80mA
 - **Interface**: TTL Serial (115200 baud, 8N1)
 
-### ESP8266 Microcontroller
+### ESP32 Dev Kit V1 Microcontroller
 - **WiFi Mode**: Access Point (AP)
 - **SSID**: `LD1125H_Sensor`
 - **Password**: `12345678`
-- **Serial Connection**:
-  - RX: GPIO 12
-  - TX: GPIO 14
+- **Serial Connection** (Hardware Serial2):
+  - RX: GPIO 16
+  - TX: GPIO 17
+- **Debug Serial**: USB Serial (115200 baud)
+- **Advantages over ESP8266**:
+  - Hardware UART (no SoftwareSerial, no data loss)
+  - Dual-core 240MHz processor
+  - 520KB RAM vs 80KB
+  - More reliable radar communication
 
 ## Key Features
 
@@ -37,7 +43,8 @@ Access via `http://192.168.4.1` after connecting to the sensor's WiFi network.
 - Live occupancy status display
 - Real-time distance readings
 - Signal strength indicator (in test mode)
-- Auto-refresh every 1 second
+- Auto-refresh every 3 seconds
+- Immediate state change detection
 
 #### Configuration Panel
 - **Max Detection Distance** (rmax): 0.4m to 12m (default: 8m)

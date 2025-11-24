@@ -76,11 +76,37 @@ Movement and stationary presence detection events:
 ```
 *Note: Signal strength only shown when test mode is enabled*
 
+### [STATE CHANGE] - Immediate State Transitions
+When occupancy state changes (reported immediately):
+```
+========================================
+[STATE CHANGE] IMMEDIATE UPDATE
+  Previous: none -> New: moving
+  Distance: 2.5m
+  Timestamp: 12345678
+========================================
+
+========================================
+[STATE CHANGE] IMMEDIATE UPDATE
+  Previous: moving -> New: stationary
+  Distance: 2.3m
+  Timestamp: 15678900
+========================================
+
+========================================
+[STATE CHANGE] IMMEDIATE UPDATE
+  Previous: stationary -> New: none
+  Distance: 0.0m
+  Timestamp: 45678900
+========================================
+```
+
 ### [TIMEOUT] - No Presence Timeout
 When presence clears after timeout period:
 ```
 [TIMEOUT] No detection for 30 seconds - clearing presence state
 ```
+*Note: This also triggers a [STATE CHANGE] event*
 
 ### [EEPROM] - Configuration Persistence
 EEPROM read/write operations:

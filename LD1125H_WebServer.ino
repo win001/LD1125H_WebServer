@@ -1,5 +1,5 @@
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 
@@ -8,17 +8,22 @@ const char* ssid = "LD1125H_Sensor";
 const char* password = "12345678";
 
 // Web Server
-ESP8266WebServer server(80);
+WebServer server(80);
 
-// Serial for LD1125H (using SoftwareSerial for ESP8266)
-#include <SoftwareSerial.h>
-SoftwareSerial radarSerial(12, 14); // RX, TX pins
+// Serial for LD1125H (using Hardware Serial2 on ESP32)
+// ESP32 Serial2 default pins: RX=GPIO16, TX=GPIO17
+// You can change these pins if needed
+#define RADAR_RX 16
+#define RADAR_TX 17
+HardwareSerial radarSerial(2); // Use UART2
 
 // Sensor Data
 struct {
   String state = "none";
+  String previousState = "none";
   float distance = 0.0;
   unsigned long lastDetection = 0;
+  unsigned long lastStateChange = 0;
   int signalStrength = 0;
 } sensorData;
 
@@ -40,16 +45,47 @@ float maxDistance = 0;
 
 String serialBuffer = "";
 
+// Function to report state changes immediately
+void reportStateChange(String newState, String oldState, float distance) {
+  sensorData.lastStateChange = millis();
+
+  Serial.println("========================================");
+  Serial.println("[STATE CHANGE] IMMEDIATE UPDATE");
+  Serial.print("  Previous: ");
+  Serial.print(oldState);
+  Serial.print(" -> New: ");
+  Serial.println(newState);
+  Serial.print("  Distance: ");
+  Serial.print(distance);
+  Serial.println("m");
+  Serial.print("  Timestamp: ");
+  Serial.println(millis());
+  Serial.println("========================================");
+
+  // TODO: Add your server reporting code here
+  // Example: Send HTTP POST to external server
+  // HTTPClient http;
+  // http.begin("http://your-server.com/api/state");
+  // http.addHeader("Content-Type", "application/json");
+  // String payload = "{\"state\":\"" + newState + "\",\"distance\":" + String(distance) + "}";
+  // http.POST(payload);
+  // http.end();
+}
+
 void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println("\n\n========================================");
-  Serial.println("LD1125H Occupancy Sensor Web Server");
+  Serial.println("LD1125H Occupancy Sensor Web Server - ESP32");
   Serial.println("========================================");
 
   Serial.println("[INIT] Starting radar serial communication...");
-  radarSerial.begin(115200);
-  Serial.println("[INIT] Radar serial initialized at 115200 baud");
+  radarSerial.begin(115200, SERIAL_8N1, RADAR_RX, RADAR_TX);
+  Serial.print("[INIT] Radar serial initialized at 115200 baud (RX=GPIO");
+  Serial.print(RADAR_RX);
+  Serial.print(", TX=GPIO");
+  Serial.print(RADAR_TX);
+  Serial.println(")");
 
   Serial.println("[INIT] Initializing EEPROM...");
   EEPROM.begin(512);
@@ -279,12 +315,12 @@ void handleRoot() {
   html += "  document.getElementById('mth3_val').innerText=this.value;";
   html += "};";
   
-  // Auto refresh
+  // Auto refresh - Update every 3 seconds
   html += "loadConfig();";
   html += "updateStatus();";
   html += "updateStats();";
-  html += "setInterval(updateStatus,1000);";
-  html += "setInterval(updateStats,5000);";
+  html += "setInterval(updateStatus,3000);";  // Changed from 1000ms to 3000ms
+  html += "setInterval(updateStats,3000);";
   
   html += "</script>";
   html += "</body></html>";
@@ -295,8 +331,10 @@ void handleRoot() {
 void handleStatus() {
   String json = "{";
   json += "\"state\":\"" + sensorData.state + "\",";
+  json += "\"previousState\":\"" + sensorData.previousState + "\",";
   json += "\"distance\":" + String(sensorData.distance) + ",";
-  json += "\"signal\":" + String(sensorData.signalStrength);
+  json += "\"signal\":" + String(sensorData.signalStrength) + ",";
+  json += "\"lastStateChange\":" + String(sensorData.lastStateChange);
   json += "}";
   Serial.print("[WEB] GET /status - State: ");
   Serial.print(sensorData.state);
@@ -460,8 +498,9 @@ void processData(String data) {
     }
 
     // Update state
+    String newState = "";
     if (data.startsWith("mov")) {
-      sensorData.state = "moving";
+      newState = "moving";
       movingCount++;
       Serial.print("[DETECT] MOVING at ");
       Serial.print(sensorData.distance);
@@ -473,7 +512,7 @@ void processData(String data) {
       }
       Serial.println();
     } else {
-      sensorData.state = "stationary";
+      newState = "stationary";
       stationaryCount++;
       Serial.print("[DETECT] STATIONARY at ");
       Serial.print(sensorData.distance);
@@ -485,6 +524,13 @@ void processData(String data) {
       }
       Serial.println();
     }
+
+    // Check for state change and report immediately
+    if (newState != sensorData.state) {
+      reportStateChange(newState, sensorData.state, sensorData.distance);
+      sensorData.previousState = sensorData.state;
+    }
+    sensorData.state = newState;
   } else if (data.length() > 0) {
     // Log any non-detection data (could be radar configuration responses)
     Serial.print("[RADAR] Info: ");
@@ -499,6 +545,10 @@ void checkTimeout() {
         Serial.print("[TIMEOUT] No detection for ");
         Serial.print(config.timeout);
         Serial.println(" seconds - clearing presence state");
+
+        // Report state change to "none"
+        reportStateChange("none", sensorData.state, 0);
+        sensorData.previousState = sensorData.state;
       }
       sensorData.state = "none";
       sensorData.distance = 0;
